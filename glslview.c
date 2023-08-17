@@ -5,7 +5,7 @@ SRC=$DIR/$(basename "$0")
 EXE=/tmp/exe-$(basename "$0" .c)
 if [ \! -f "$EXE" -o "$SRC" -nt "$EXE" ]; then
 	LIBS="sdl2 glesv2"
-	tail -n +2 $SRC | gcc -Werror -Wall -std=c99 -O3 -march=native $(pkgconf --cflags $LIBS) -x c - \
+	tail -n +2 $SRC | gcc -Werror -Wall -Wpedantic -std=c99 -O3 -march=native $(pkgconf --cflags $LIBS) -x c - \
 		-o $EXE $(pkgconf --libs $LIBS) || exit 1
 fi
 exec $EXE $@
@@ -26,15 +26,16 @@ exec $EXE $@
 #define STB_IMAGE_WRITE_IMPLEMENTATION 1
 #include <stb/stb_image_write.h>
 
-#define		STRING(...)		#__VA_ARGS__
+#define		GLSL(...)		#__VA_ARGS__
 #define		COUNTOF(x)		(sizeof(x)/sizeof((x)[0]))
 #define		LOG_NEUTRAL		"\x1b[0m"
 #define		LOG_BAD			"\x1b[31m"
 #define		log_error(...)		log_printf(__func__, LOG_BAD, __VA_ARGS__)
 #define		log_info(...)		log_printf(__func__, LOG_NEUTRAL, __VA_ARGS__)
 
-void		log_printf(char const *, char const *type, char const *format, ...)
+void		log_printf(char const *func, char const *type, char const *format, ...)
 {
+	(void)func;
 	static char log_buf[4096];
 	va_list args;
 	va_start(args, format);
@@ -52,19 +53,20 @@ static SDL_Window *window = NULL;
 static SDL_GLContext gl_context = NULL;
 static int drawable_w, drawable_h;
 static GLuint program, vertex_shader, fragment_shader;
-static GLint u_window_size, u_time;
+static GLint u_window_size, u_time, u_mouse;
 static uint64_t time_freq;
 static bool keep_going = true;
 static char const *fragment_filename = NULL;
 static char const *screencap_dir = ".";
 static char screencap_prefix[4096] = "glslview";
 
-char const *	vertex_source = STRING(
-void main()
-{
-	highp vec2 v = 4.0 * vec2(gl_VertexID & 1, (gl_VertexID >> 1) & 1) - 1.0;
-	gl_Position = vec4(v, 0.0, 1.0);
-}
+char const *	vertex_source =
+GLSL(
+	void main()
+	{
+		highp vec2 v = 4.0 * vec2(gl_VertexID & 1, (gl_VertexID >> 1) & 1) - 1.0;
+		gl_Position = vec4(v, 0.0, 1.0);
+	}
 );
 
 static GLchar	fragment_source[1 << 16];
@@ -102,6 +104,8 @@ static void	save_screencap()
 		} else
 			fullname_taken = false;
 	} while (fullname_taken);
+
+	stbi_flip_vertically_on_write(true);
 
 	if (!stbi_write_png(fullname, drawable_w, drawable_h, 4, pixels, 0)) {
 		log_error("Can't save screencap: stb_image error.");
@@ -194,6 +198,10 @@ int		main(int argc, char const **argv)
 		goto on_fail;
 	}
 
+	log_info("GL_VENDOR   \"%s\"", glGetString(GL_VENDOR));
+	log_info("GL_RENDERER \"%s\"", glGetString(GL_RENDERER));
+	log_info("GL_VERSION  \"%s\"", glGetString(GL_VERSION));
+
 	GLchar const *vertex_strings[] = {
 		"#version 300 es\n",
 		"precision highp float;\n",
@@ -245,11 +253,15 @@ int		main(int argc, char const **argv)
 	time_freq = SDL_GetPerformanceFrequency();
 	u_window_size = glGetUniformLocation(program, "u_window_size");
 	u_time = glGetUniformLocation(program, "u_time");
+	u_mouse = glGetUniformLocation(program, "u_mouse");
 	glUseProgram(program);
 	glClearColor(0.f, 0.f, 0.f, 1.f);
 	glPixelStorei(GL_PACK_ROW_LENGTH, 0);
 	glPixelStorei(GL_PACK_ALIGNMENT, 1);
 	SDL_GL_GetDrawableSize(window, &drawable_w, &drawable_h);
+
+	int mouse_x = 0, mouse_y = 0;
+	uint64_t epoch = SDL_GetPerformanceCounter();
 
 	while (keep_going) {
 		SDL_Event event;
@@ -257,6 +269,10 @@ int		main(int argc, char const **argv)
 
 		while (SDL_PollEvent(&event)) {
 			switch (event.type) {
+			case SDL_MOUSEMOTION: {
+				mouse_x = event.motion.x;
+				mouse_y = event.motion.y;
+			} break;
 			case SDL_KEYDOWN: {
 				switch (event.key.keysym.sym) {
 				case SDLK_p: {
@@ -283,7 +299,8 @@ int		main(int argc, char const **argv)
 
 		glClear(GL_COLOR_BUFFER_BIT);
 		if (u_window_size >= 0) glUniform2f(u_window_size, drawable_w, drawable_h);
-		if (u_time >= 0) glUniform1f(u_time, (double)SDL_GetPerformanceCounter() / time_freq);
+		if (u_time >= 0) glUniform1f(u_time, (double)(SDL_GetPerformanceCounter() - epoch) / time_freq);
+		if (u_mouse >= 0) glUniform2f(u_mouse, mouse_x, drawable_h - mouse_y);
 		glDrawArrays(GL_TRIANGLES, 0, 3);
 		if (do_screencap) save_screencap();
 		SDL_GL_SwapWindow(window);
